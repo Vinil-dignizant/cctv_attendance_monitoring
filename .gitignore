@@ -1,0 +1,7 @@
+.cctv_venv/
+cctv_venv
+snapshots
+datasets
+face_recognition/arcface/weights
+face_detection/scrfd/weights
+face_recognition/arcface/weights/arcface_r100.pth

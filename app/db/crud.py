@@ -57,13 +57,14 @@ def insert_log(
         print(f"[ERROR] Failed to insert log: {e}")
         return False
 
-def update_daily_summary(db: Session, person_name: str, event_type: str, timestamp: datetime):
-    """Update daily summary statistics"""
+def update_daily_summary(db: Session, person_name: str, camera_id: str, event_type: str, timestamp: datetime):
+    """Update daily summary statistics with camera_id"""
     date = timestamp.date()
     
     summary = db.query(models.DailySummary).filter(
         models.DailySummary.person_name == person_name,
-        models.DailySummary.date == date
+        models.DailySummary.date == date,
+        models.DailySummary.camera_id == camera_id  # New filter
     ).first()
     
     if summary:
@@ -82,6 +83,7 @@ def update_daily_summary(db: Session, person_name: str, event_type: str, timesta
         summary = models.DailySummary(
             person_name=person_name,
             date=date,
+            camera_id=camera_id,  # New field
             first_login=timestamp if event_type == 'login' else None,
             last_logout=timestamp if event_type == 'logout' else None,
             total_logins=1 if event_type == 'login' else 0,

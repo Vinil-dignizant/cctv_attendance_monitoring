@@ -1,5 +1,6 @@
 # models.py
 from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, Interval, func
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from app.db.database import Base
 from sqlalchemy.sql import expression
@@ -46,12 +47,31 @@ class Camera(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+# class DailySummary(Base):
+#     __tablename__ = 'daily_summary'
+    
+#     id = Column(Integer, primary_key=True, index=True)
+#     person_name = Column(String(100), nullable=False)
+#     date = Column(Date, nullable=False)
+#     first_login = Column(DateTime(timezone=True))
+#     last_logout = Column(DateTime(timezone=True))
+#     total_logins = Column(Integer, default=0)
+#     total_logouts = Column(Integer, default=0)
+#     working_hours = Column(Interval)
+#     created_at = Column(DateTime(timezone=True), server_default=func.now())
+#     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# whithout camera id
+# ==================================================
+
 class DailySummary(Base):
     __tablename__ = 'daily_summary'
     
     id = Column(Integer, primary_key=True, index=True)
     person_name = Column(String(100), nullable=False)
     date = Column(Date, nullable=False)
+    camera_id = Column(String(50), nullable=False)  # New field
     first_login = Column(DateTime(timezone=True))
     last_logout = Column(DateTime(timezone=True))
     total_logins = Column(Integer, default=0)
@@ -59,3 +79,8 @@ class DailySummary(Base):
     working_hours = Column(Interval)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Add composite unique constraint (optional)
+    __table_args__ = (
+        UniqueConstraint('person_name', 'date', 'camera_id', name='unique_person_date_camera'),
+    )

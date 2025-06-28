@@ -20,7 +20,7 @@ from face_tracking.byte_tracker.byte_tracker import BYTETracker
 from face_tracking.byte_tracker.visualize import plot_tracking
 
 from app.db.database import engine
-from app.db.crud import insert_log, init_db
+from app.db.crud import insert_log, init_db, update_daily_summary
 from app.db.database import get_db
 from .shared_state import latest_frames, frame_lock
 
@@ -160,7 +160,7 @@ class MultiCameraFaceRecognition:
                     f"CONFIDENCE:{confidence} | CAMERA:{camera_id} | EVENT:{event_type}")
         
         try:
-            db = next(get_db())  # Get a database session
+            db = next(get_db())
             success = insert_log(
                 db=db,
                 person_name=person_name,
@@ -171,7 +171,9 @@ class MultiCameraFaceRecognition:
                 snapshot_path=snapshot_path,
                 timestamp=timestamp
             )
-            print(f"[DEBUG] {'Successfully' if success else 'Failed to'} log for {person_name}")
+            # Update to pass camera_id to daily summary
+            update_daily_summary(db, person_name, camera_id, event_type, timestamp)
+            print(f"[DEBUG] Logged attendance for {person_name} at camera {camera_id}")
         except Exception as e:
             print(f"[ERROR] Database logging failed: {e}")
 

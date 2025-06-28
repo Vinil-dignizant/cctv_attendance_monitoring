@@ -1,6 +1,8 @@
 # app/db/crud.py
 from sqlalchemy.orm import Session
+import csv
 from datetime import datetime
+from pathlib import Path
 import pytz
 from . import models
 from .database import engine, SessionLocal  # Add this import
@@ -92,3 +94,28 @@ def update_daily_summary(db: Session, person_name: str, camera_id: str, event_ty
         db.add(summary)
     
     db.commit()
+
+def export_to_csv(db: Session, output_dir="exports"):
+    """Export attendance logs to CSV file"""
+    Path(output_dir).mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"attendance_export_{timestamp}.csv"
+    filepath = Path(output_dir) / filename
+    
+    logs = db.query(models.AttendanceLog).order_by(models.AttendanceLog.timestamp.desc()).all()
+    
+    with open(filepath, 'w', newline='') as csvfile:
+        fieldnames = ['id', 'person_name', 'camera_id', 'confidence', 'timestamp']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        
+        writer.writeheader()
+        for log in logs:
+            writer.writerow({
+                'id': log.id,
+                'person_name': log.person_name,
+                'camera_id': log.camera_id,
+                'confidence': log.confidence_score,
+                'timestamp': log.timestamp.isoformat()
+            })
+    
+    return str(filepath.absolute())

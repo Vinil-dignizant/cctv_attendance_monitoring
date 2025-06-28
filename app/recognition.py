@@ -19,7 +19,7 @@ from face_recognition.arcface.utils import compare_encodings, read_features
 from face_tracking.byte_tracker.byte_tracker import BYTETracker
 from face_tracking.byte_tracker.visualize import plot_tracking
 
-from .db.postgres import insert_log, init_db
+from app.db.postgres import insert_log, init_db
 from .shared_state import latest_frames, frame_lock
 
 
@@ -179,7 +179,7 @@ class MultiCameraFaceRecognition:
         cap.set(cv2.CAP_PROP_FPS, 30)
         
         # Load tracking config
-        with open("./face_tracking/config/config_tracking.yaml", "r") as f:
+        with open("config/tracking_config.yaml", "r") as f:
             track_config = yaml.safe_load(f)
         
         tracker = BYTETracker(args=track_config, frame_rate=30)

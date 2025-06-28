@@ -55,9 +55,27 @@ def init_db():
                 # Create timestamp update function
                 cursor.execute(UPDATE_TIMESTAMP_FUNCTION)
                 
-                # Create triggers
-                for trigger in TRIGGERS.values():
-                    cursor.execute(trigger)
+                # Drop existing triggers first if they exist
+                cursor.execute("DROP TRIGGER IF EXISTS update_persons_updated_at ON persons;")
+                cursor.execute("DROP TRIGGER IF EXISTS update_cameras_updated_at ON cameras;")
+                cursor.execute("DROP TRIGGER IF EXISTS update_daily_summary_updated_at ON daily_summary;")
+
+                # Then create new triggers
+                cursor.execute("""
+                    CREATE TRIGGER update_persons_updated_at 
+                        BEFORE UPDATE ON persons 
+                        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+                """)
+                cursor.execute("""
+                    CREATE TRIGGER update_cameras_updated_at 
+                        BEFORE UPDATE ON cameras 
+                        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+                """)
+                cursor.execute("""
+                    CREATE TRIGGER update_daily_summary_updated_at 
+                        BEFORE UPDATE ON daily_summary 
+                        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+                """)
                 
                 conn.commit()
                 logger.info("Database initialized successfully")

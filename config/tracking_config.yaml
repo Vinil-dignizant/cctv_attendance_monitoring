@@ -8,3 +8,7 @@ track_thresh: 0.5
 aspect_ratio_thresh: 1.6
 ckpt: bytetrack_s_mot17.pth.tar
 fp16: True
+
+
+track_thresh: 0.5
+high_thresh: 0.6

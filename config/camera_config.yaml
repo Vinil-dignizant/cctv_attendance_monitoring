@@ -12,12 +12,12 @@ cameras:
   - camera_id: "exit_01"
     url: "rtsp://192.168.0.101:8080/h264_pcm.sdp"
     event_type: "logout"
-    enabled: true
+    enabled: false
 
   - camera_id: "exit_02"
     url: "rtsp://192.168.0.102:8080/h264_pcm.sdp"
     event_type: "logout"
-    enabled: true
+    enabled: false
 
   # Add more cameras as needed
   # - camera_id: "exit_01"

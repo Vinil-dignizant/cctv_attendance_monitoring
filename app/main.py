@@ -1,15 +1,24 @@
-from .api import app
-from .recognition import MultiCameraFaceRecognition
+import os
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = str(Path(__file__).parent.parent)
+sys.path.append(project_root)
+
+from app.api import app
+from app.recognition import MultiCameraFaceRecognition
 import threading
 
 def run_recognition():
-    system = MultiCameraFaceRecognition("config/camera_config.yaml")
+    config_path = os.path.join(project_root, 'config', 'camera_config.yaml')
+    system = MultiCameraFaceRecognition(config_path)
     system.start()
 
-if __name__ == "__main__":
-    # Start recognition system in background thread
+def main():
     threading.Thread(target=run_recognition, daemon=True).start()
-    
-    # Start FastAPI server
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+if __name__ == "__main__":
+    main()

@@ -12,3 +12,4 @@ datasets
 face_recognition/arcface/weights
 face_detection/scrfd/weights
 face_recognition/arcface/weights/arcface_r100.pth
+attendance.log

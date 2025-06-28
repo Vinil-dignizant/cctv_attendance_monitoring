@@ -19,7 +19,9 @@ from face_recognition.arcface.utils import compare_encodings, read_features
 from face_tracking.byte_tracker.byte_tracker import BYTETracker
 from face_tracking.byte_tracker.visualize import plot_tracking
 
-from app.db.postgres import insert_log, init_db
+from app.db.database import engine
+from app.db.crud import insert_log, init_db
+from app.db.database import get_db
 from .shared_state import latest_frames, frame_lock
 
 
@@ -149,7 +151,7 @@ class MultiCameraFaceRecognition:
     def log_attendance(self, person_name, tracking_id, score, camera_id, event_type):
         """Log attendance to database"""
         IST = pytz.timezone('Asia/Kolkata')
-        timestamp = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
+        timestamp = datetime.now(IST)
         confidence = f"{score:.2f}" if score else "N/A"
         
         snapshot_path = f"snapshots/{camera_id}_{person_name}_{int(time.time())}.jpg"
@@ -157,8 +159,21 @@ class MultiCameraFaceRecognition:
         logging.info(f"ATTENDANCE | {timestamp} | {person_name} | ID:{tracking_id} | "
                     f"CONFIDENCE:{confidence} | CAMERA:{camera_id} | EVENT:{event_type}")
         
-        self.log_queue.put((person_name, tracking_id, score, camera_id, event_type, snapshot_path, timestamp))
-        print(f"[DEBUG] Enqueued log for {person_name} | Camera: {camera_id} | Score: {score}")
+        try:
+            db = next(get_db())  # Get a database session
+            success = insert_log(
+                db=db,
+                person_name=person_name,
+                tracking_id=tracking_id,
+                confidence_score=float(score) if score else None,
+                camera_id=camera_id,
+                event_type=event_type,
+                snapshot_path=snapshot_path,
+                timestamp=timestamp
+            )
+            print(f"[DEBUG] {'Successfully' if success else 'Failed to'} log for {person_name}")
+        except Exception as e:
+            print(f"[ERROR] Database logging failed: {e}")
 
     def camera_worker(self, camera_config):
         """Worker thread for each camera - NO GUI DISPLAY"""

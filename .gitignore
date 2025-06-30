@@ -7,9 +7,11 @@ __pycache__/
 
 .cctv_venv/
 cctv_venv
+py39_venv
 snapshots
 datasets
 face_recognition/arcface/weights
 face_detection/scrfd/weights
 face_recognition/arcface/weights/arcface_r100.pth
 attendance.log
+face_recognition_system.egg-info

@@ -119,3 +119,18 @@ def export_to_csv(db: Session, output_dir="exports"):
             })
     
     return str(filepath.absolute())
+
+
+def get_attendance_logs(limit: int = None) -> List[models.AttendanceLog]:
+    """Retrieve attendance logs from database"""
+    db = SessionLocal()
+    try:
+        query = db.query(models.AttendanceLog).order_by(models.AttendanceLog.timestamp.desc())
+        if limit:
+            return query.limit(limit).all()
+        return query.all()
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch attendance logs: {e}")
+        return []
+    finally:
+        db.close()

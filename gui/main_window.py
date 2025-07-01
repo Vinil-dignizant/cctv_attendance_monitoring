@@ -1,10 +1,15 @@
 # gui/main_window.py
+import time
 import tkinter as tk
 from tkinter import ttk
-from gui.camera_feed import CameraFeed
-from gui.logs_view import LogsView
-from gui.controls import SystemControls
-from app.recognition import MultiCameraFaceRecognition
+from .camera_feed import CameraFeed
+from .logs_view import LogsView
+from .controls import SystemControls
+import sys
+import os
+
+# Fix import path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 class MainApp:
     def __init__(self, root):
@@ -27,28 +32,28 @@ class MainApp:
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
+        # Control Panel (at top)
+        self.control_panel = ttk.LabelFrame(self.main_frame, text="System Controls")
+        self.control_panel.pack(fill=tk.X, pady=(0, 10))
+        self.system_controls = SystemControls(self.control_panel, self)
+        
         # Tab system
         self.notebook = ttk.Notebook(self.main_frame)
         
         # Camera Tab
         self.camera_tab = ttk.Frame(self.notebook)
-        self.camera_feed = CameraFeed(self.camera_tab)
-        self.camera_feed.frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.camera_feed = CameraFeed(self.camera_tab, self)
         
         # Logs Tab
         self.logs_tab = ttk.Frame(self.notebook)
-        self.logs_view = LogsView(self.logs_tab)
-        self.logs_view.tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.logs_view = LogsView(self.logs_tab, self)
         
         # Add tabs
         self.notebook.add(self.camera_tab, text="Live Camera Feed")
         self.notebook.add(self.logs_tab, text="Attendance Logs")
         self.notebook.pack(fill=tk.BOTH, expand=True)
         
-        # Control Panel
-        self.control_panel = ttk.LabelFrame(self.main_frame, text="System Controls")
-        self.system_controls = SystemControls(self.control_panel, self)
-        self.control_panel.pack(fill=tk.X, pady=10)
+        print("[INFO] GUI initialized successfully")
 
     def protocols(self):
         """Handle window close events"""
@@ -56,12 +61,40 @@ class MainApp:
 
     def on_close(self):
         """Clean up resources on window close"""
+        print("[INFO] Shutting down application...")
+        
+        # Stop recognition system
         if self.recognition_system:
-            self.recognition_system.stop()
-        self.camera_feed.release()
+            try:
+                self.system_controls.stop_system()
+            except Exception as e:
+                print(f"[WARNING] Error stopping recognition system: {e}")
+        
+        # Stop camera feed
+        try:
+            self.camera_feed.release()
+        except Exception as e:
+            print(f"[WARNING] Error releasing camera: {e}")
+            
+        # Stop auto refresh
+        if hasattr(self, 'logs_view'):
+            try:
+                self.logs_view.stop_auto_refresh()
+            except Exception as e:
+                print(f"[WARNING] Error stopping auto refresh: {e}")
+        
         self.root.destroy()
 
-if __name__ == "__main__":
+def main():
+    """Main function to start the GUI application"""
     root = tk.Tk()
     app = MainApp(root)
-    root.mainloop()
+    
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        print("\n[INFO] Application interrupted by user")
+        app.on_close()
+
+if __name__ == "__main__":
+    main()

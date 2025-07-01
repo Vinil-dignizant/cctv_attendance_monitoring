@@ -1,14 +1,29 @@
 # gui/logs_view.py
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from datetime import datetime
+import sys
+import os
+import logging
+from typing import List
+
+# Fix import path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from app.db.crud import get_attendance_logs
+from app.db.models import AttendanceLog
 
 class LogsView:
-    def __init__(self, parent_frame):
+    def __init__(self, parent_frame, main_app):
         self.parent = parent_frame
+        self.main_app = main_app
+        self.auto_refresh_enabled = False
+        
+        # Create main frame for logs view
+        self.frame = ttk.Frame(self.parent)
+        self.frame.pack(fill=tk.BOTH, expand=True)
+        
         self.tree = ttk.Treeview(
-            self.parent,
+            self.frame,
             columns=("id", "name", "camera", "confidence", "timestamp"),
             show="headings",
             selectmode="browse"
@@ -29,7 +44,7 @@ class LogsView:
         
         # Add scrollbar
         scrollbar = ttk.Scrollbar(
-            self.parent,
+            self.frame,
             orient=tk.VERTICAL,
             command=self.tree.yview
         )
@@ -38,32 +53,68 @@ class LogsView:
         self.tree.pack(fill=tk.BOTH, expand=True)
         
         # Context menu
-        self.context_menu = tk.Menu(self.parent, tearoff=0)
+        self.context_menu = tk.Menu(self.frame, tearoff=0)
         self.context_menu.add_command(
             label="Refresh",
             command=self.load_data
         )
         self.tree.bind("<Button-3>", self.show_context_menu)
         
+        # Status label
+        self.status_var = tk.StringVar(value="Logs: Ready")
+        self.status_label = ttk.Label(
+            self.frame,
+            textvariable=self.status_var,
+            foreground="green"
+        )
+        self.status_label.pack(fill=tk.X, padx=5, pady=5)
+        
         # Load initial data
         self.load_data()
 
     def load_data(self):
         """Load attendance logs from database"""
-        # Clear existing data
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        
-        # Fetch and display logs
-        logs = get_attendance_logs(limit=100)  # Implement this in crud.py
-        for log in logs:
-            self.tree.insert("", tk.END, values=(
-                log.id,
-                log.person_name,
-                log.camera_id,
-                f"{log.confidence_score:.2f}" if log.confidence_score else "N/A",
-                log.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-            ))
+        try:
+            # Clear existing data
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+            
+            # Fetch and display logs
+            logs = get_attendance_logs(limit=100)
+            for log in logs:
+                self.tree.insert("", tk.END, values=(
+                    log.id,
+                    log.person_name,
+                    log.camera_id,
+                    f"{log.confidence_score:.2f}" if log.confidence_score else "N/A",
+                    log.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                ))
+            self.status_var.set(f"Logs: Loaded {len(logs)} records")
+            print(f"[DEBUG] Loaded {len(logs)} log records")
+        except Exception as e:
+            self.status_var.set("Logs: Error loading data")
+            print(f"[ERROR] Failed to load logs: {str(e)}")
+            messagebox.showerror("Database Error", f"Failed to load logs: {str(e)}")
+
+    def auto_refresh(self, interval=5000):
+        """Auto-refresh logs at regular intervals"""
+        if not self.auto_refresh_enabled:
+            return
+            
+        self.load_data()
+        if (hasattr(self.main_app, 'recognition_system') and 
+            self.main_app.recognition_system and
+            self.auto_refresh_enabled):
+            self.frame.after(interval, lambda: self.auto_refresh(interval))
+
+    def start_auto_refresh(self):
+        """Start auto-refresh"""
+        self.auto_refresh_enabled = True
+        self.auto_refresh()
+
+    def stop_auto_refresh(self):
+        """Stop auto-refresh"""
+        self.auto_refresh_enabled = False
 
     def show_context_menu(self, event):
         """Display right-click context menu"""

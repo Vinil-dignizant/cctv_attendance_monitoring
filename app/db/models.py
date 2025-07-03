@@ -47,6 +47,9 @@ class Camera(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+
+# whithout camera id
+# ==================================================
 # class DailySummary(Base):
 #     __tablename__ = 'daily_summary'
     
@@ -62,8 +65,7 @@ class Camera(Base):
 #     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
-# whithout camera id
-# ==================================================
+
 
 class DailySummary(Base):
     __tablename__ = 'daily_summary'

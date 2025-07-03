@@ -1,12 +1,24 @@
-# app/db/crud.py
 from sqlalchemy.orm import Session
 import csv
 from datetime import datetime
 from pathlib import Path
 import pytz
 from . import models
-from .database import engine, SessionLocal  # Add this import
+from .database import SessionLocal, engine
 from typing import Optional, List, Dict, Any
+from contextlib import contextmanager
+
+@contextmanager
+def get_db():
+    """Provide a transactional scope around a series of operations."""
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 def init_db():
     """Initialize database tables"""
@@ -18,55 +30,57 @@ def init_db():
         raise
 
 def insert_log(
-    db: Session,
     person_name: str,
-    tracking_id: int,
-    confidence_score: Optional[float],
     camera_id: str,
-    event_type: str,
-    snapshot_path: str,
-    timestamp: datetime
-):
+    tracking_id: Optional[int] = None,
+    confidence_score: Optional[float] = None,
+    event_type: str = 'login',
+    snapshot_path: Optional[str] = None,
+    timestamp: Optional[datetime] = None
+) -> bool:
     """Insert attendance log into database"""
-    try:
-        # Handle timestamp conversion if it's a string
-        if isinstance(timestamp, str):
-            try:
-                if '+' in timestamp:
-                    timestamp = datetime.fromisoformat(timestamp)
-                else:
-                    timestamp = datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S')
-                    timestamp = pytz.timezone('Asia/Kolkata').localize(timestamp)
-            except ValueError:
+    with get_db() as db:
+        try:
+            # Handle timestamp conversion
+            if timestamp is None:
                 timestamp = datetime.now(pytz.timezone('Asia/Kolkata'))
-        
-        log = models.AttendanceLog(
-            person_name=person_name,
-            tracking_id=tracking_id,
-            confidence_score=confidence_score,
-            camera_id=camera_id,
-            event_type=event_type,
-            snapshot_path=snapshot_path,
-            timestamp=timestamp
-        )
-        
-        db.add(log)
-        update_daily_summary(db, person_name, event_type, timestamp)
-        db.commit()
-        return True
-    except Exception as e:
-        db.rollback()
-        print(f"[ERROR] Failed to insert log: {e}")
-        return False
+            elif isinstance(timestamp, str):
+                try:
+                    if '+' in timestamp:
+                        timestamp = datetime.fromisoformat(timestamp)
+                    else:
+                        timestamp = datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S')
+                        timestamp = pytz.timezone('Asia/Kolkata').localize(timestamp)
+                except ValueError:
+                    timestamp = datetime.now(pytz.timezone('Asia/Kolkata'))
+            
+            log = models.AttendanceLog(
+                person_name=person_name,
+                tracking_id=tracking_id,
+                confidence_score=confidence_score,
+                camera_id=camera_id,
+                event_type=event_type,
+                snapshot_path=snapshot_path,
+                timestamp=timestamp
+            )
+            
+            db.add(log)
+            _update_daily_summary(db, person_name, camera_id, event_type, timestamp)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"[ERROR] Failed to insert log: {e}")
+            return False
 
-def update_daily_summary(db: Session, person_name: str, camera_id: str, event_type: str, timestamp: datetime):
-    """Update daily summary statistics with camera_id"""
+def _update_daily_summary(db: Session, person_name: str, camera_id: str, event_type: str, timestamp: datetime):
+    """Internal function to update daily summary statistics"""
     date = timestamp.date()
     
     summary = db.query(models.DailySummary).filter(
         models.DailySummary.person_name == person_name,
         models.DailySummary.date == date,
-        models.DailySummary.camera_id == camera_id  # New filter
+        models.DailySummary.camera_id == camera_id
     ).first()
     
     if summary:
@@ -85,7 +99,7 @@ def update_daily_summary(db: Session, person_name: str, camera_id: str, event_ty
         summary = models.DailySummary(
             person_name=person_name,
             date=date,
-            camera_id=camera_id,  # New field
+            camera_id=camera_id,
             first_login=timestamp if event_type == 'login' else None,
             last_logout=timestamp if event_type == 'logout' else None,
             total_logins=1 if event_type == 'login' else 0,
@@ -93,7 +107,13 @@ def update_daily_summary(db: Session, person_name: str, camera_id: str, event_ty
         )
         db.add(summary)
     
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Failed to update daily summary: {e}")
+
+# Rest of the functions (export_to_csv, get_attendance_logs) can remain the same
 
 def export_to_csv(db: Session, output_dir="exports"):
     """Export attendance logs to CSV file"""

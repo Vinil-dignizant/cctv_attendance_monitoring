@@ -20,10 +20,9 @@ from face_tracking.byte_tracker.byte_tracker import BYTETracker
 from face_tracking.byte_tracker.visualize import plot_tracking
 
 from app.db.database import engine
-from app.db.crud import insert_log, init_db, update_daily_summary
+from app.db.crud import insert_log, init_db, _update_daily_summary
 from app.db.database import get_db
-from .shared_state import latest_frames, frame_lock
-
+from gui.components.shared_state import latest_frames, frame_lock
 
 # Logging setup
 logging.basicConfig(
@@ -34,6 +33,7 @@ logging.basicConfig(
 
 class MultiCameraFaceRecognition:
     def __init__(self, config_path="camera_config.yaml"):
+        self._running = False  # System running state flag
         self.config = self.load_config(config_path)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[INFO] Using device: {self.device}")
@@ -51,6 +51,7 @@ class MultiCameraFaceRecognition:
         self.id_face_mapping = defaultdict(dict)
         self.last_logged_time = {}
         self.recognition_history = defaultdict(lambda: deque(maxlen=3))
+        self.worker_threads = []  # Track all worker threads
         
         # Create snapshots directory
         os.makedirs("snapshots", exist_ok=True)
@@ -149,36 +150,27 @@ class MultiCameraFaceRecognition:
         return name_count / len(recent) >= 0.6
     
     def log_attendance(self, person_name, tracking_id, score, camera_id, event_type):
-        """Log attendance to database"""
-        IST = pytz.timezone('Asia/Kolkata')
-        timestamp = datetime.now(IST)
-        confidence = f"{score:.2f}" if score else "N/A"
-        
-        snapshot_path = f"snapshots/{camera_id}_{person_name}_{int(time.time())}.jpg"
-        
-        logging.info(f"ATTENDANCE | {timestamp} | {person_name} | ID:{tracking_id} | "
-                    f"CONFIDENCE:{confidence} | CAMERA:{camera_id} | EVENT:{event_type}")
-        
+        """Log attendance to database with proper error handling"""
         try:
-            db = next(get_db())
             success = insert_log(
-                db=db,
                 person_name=person_name,
+                camera_id=camera_id,
                 tracking_id=tracking_id,
                 confidence_score=float(score) if score else None,
-                camera_id=camera_id,
                 event_type=event_type,
-                snapshot_path=snapshot_path,
-                timestamp=timestamp
+                snapshot_path=f"snapshots/{camera_id}_{person_name}_{int(time.time())}.jpg"
             )
-            # Update to pass camera_id to daily summary
-            update_daily_summary(db, person_name, camera_id, event_type, timestamp)
-            print(f"[DEBUG] Logged attendance for {person_name} at camera {camera_id}")
+            
+            if success:
+                print(f"[DEBUG] Logged attendance for {person_name} at camera {camera_id}")
+            else:
+                print(f"[ERROR] Failed to log attendance for {person_name}")
+                
         except Exception as e:
-            print(f"[ERROR] Database logging failed: {e}")
+            print(f"[ERROR] Attendance logging failed: {e}")
 
     def camera_worker(self, camera_config):
-        """Worker thread for each camera - NO GUI DISPLAY"""
+        """Worker thread for each camera"""
         camera_id = camera_config['camera_id']
         camera_url = camera_config['url']
         event_type = camera_config['event_type']
@@ -205,9 +197,11 @@ class MultiCameraFaceRecognition:
         fps = 0
         start_time = time.time_ns()
         
-        while True:
+        while self._running:
             ret, frame = cap.read()
             if not ret:
+                if not self._running:  # Check if we're shutting down
+                    break
                 print(f"[WARNING] Failed to read frame from camera {camera_id}")
                 time.sleep(0.1)
                 continue
@@ -259,7 +253,7 @@ class MultiCameraFaceRecognition:
                     fps=fps
                 )
                 
-                # Update global frame for FastAPI streaming
+                # Update global frame
                 with frame_lock:
                     latest_frames[camera_id] = tracking_image.copy()
             else:
@@ -287,18 +281,21 @@ class MultiCameraFaceRecognition:
         
         cap.release()
         print(f"[INFO] Camera worker {camera_id} stopped")
-    
+
     def recognition_worker(self):
         """Recognition worker for all cameras"""
         print("[INFO] Starting recognition worker")
         
-        while True:
+        while self._running:
             time.sleep(self.config['performance']['recognition_interval'])
             
             with self.data_lock:
                 camera_data_copy = self.camera_data.copy()
             
             for camera_id, data in camera_data_copy.items():
+                if not self._running:  # Check if we should stop
+                    break
+                    
                 if data.get("raw_image") is None:
                     continue
                 
@@ -308,7 +305,7 @@ class MultiCameraFaceRecognition:
                 tracking_ids = data.get("tracking_ids", [])
                 tracking_bboxes = data.get("tracking_bboxes", [])
                 
-                # Convert bboxes to lists but keep landmarks as numpy arrays
+                # Convert bboxes to lists if needed
                 if hasattr(detection_bboxes, 'tolist'):
                     detection_bboxes = detection_bboxes.tolist() if detection_bboxes is not None else []
                 if hasattr(tracking_bboxes, 'tolist'):
@@ -389,14 +386,19 @@ class MultiCameraFaceRecognition:
                     except Exception as e:
                         print(f"[WARNING] Recognition failed for camera {camera_id}: {e}")
                         continue
+        
+        print("[INFO] Recognition worker stopped")
 
     def log_worker(self):
         """Database logging worker"""
         print("[INFO] Starting log worker")
 
-        while True:
+        while self._running:
             try:
                 log_entry = self.log_queue.get(timeout=1)
+                if log_entry is None:  # Shutdown signal
+                    break
+                    
                 print(f"[DEBUG] Processing log: {log_entry[0]} from camera {log_entry[3]}")
                 insert_log(*log_entry)
                 self.log_queue.task_done()
@@ -406,10 +408,17 @@ class MultiCameraFaceRecognition:
                 print(f"[ERROR] Database logging failed: {e}")
                 import traceback
                 traceback.print_exc()
+        
+        print("[INFO] Log worker stopped")
     
     def start(self):
         """Start the multi-camera recognition system"""
+        if self._running:
+            print("[WARNING] System is already running")
+            return
+            
         print("[INFO] Initializing multi-camera face recognition system...")
+        self._running = True
         
         # Initialize database
         init_db()
@@ -423,18 +432,18 @@ class MultiCameraFaceRecognition:
         
         print(f"[INFO] Found {len(enabled_cameras)} enabled cameras")
         
-        # Start worker threads
-        threads = []
+        # Clear any existing worker threads
+        self.worker_threads = []
         
         # Start log worker
         log_thread = threading.Thread(target=self.log_worker, daemon=True)
         log_thread.start()
-        threads.append(log_thread)
+        self.worker_threads.append(log_thread)
         
         # Start recognition worker
         recognition_thread = threading.Thread(target=self.recognition_worker, daemon=True)
         recognition_thread.start()
-        threads.append(recognition_thread)
+        self.worker_threads.append(recognition_thread)
         
         # Start camera workers
         for camera_config in enabled_cameras:
@@ -444,23 +453,57 @@ class MultiCameraFaceRecognition:
                 daemon=True
             )
             camera_thread.start()
-            threads.append(camera_thread)
+            self.worker_threads.append(camera_thread)
         
         print("[INFO] All workers started.")
         print("[INFO] Access camera streams at:")
         for cam in enabled_cameras:
             print(f"  - {cam['camera_id']}: http://localhost:8000/stream/{cam['camera_id']}")
+
+    def stop(self):
+        """Stop the recognition system"""
+        if not self._running:
+            print("[WARNING] System is not running")
+            return
+            
+        print("[INFO] Stopping recognition system...")
+        self._running = False  # Signal all workers to stop
         
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\n[INFO] Shutting down...")
+        # Send shutdown signal to log worker
+        self.log_queue.put(None)
+        
+        # Wait for threads to finish with timeout
+        stop_timeout = 3  # seconds
+        start_time = time.time()
+        
+        for thread in self.worker_threads:
+            remaining_time = stop_timeout - (time.time() - start_time)
+            if remaining_time > 0:
+                thread.join(timeout=remaining_time)
+                if thread.is_alive():
+                    print(f"[WARNING] Thread {thread.name} did not stop gracefully")
+        
+        # Clear camera data
+        with self.data_lock:
+            self.camera_data.clear()
+        
+        # Clear shared frames
+        with frame_lock:
+            for cam_id in list(latest_frames.keys()):
+                latest_frames[cam_id] = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        print("[INFO] Recognition system stopped")
 
 def main():
     """Main function"""
     recognition_system = MultiCameraFaceRecognition("camera_config.yaml")
     recognition_system.start()
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        recognition_system.stop()
 
 # if __name__ == "__main__":
 #     main()

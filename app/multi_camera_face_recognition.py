@@ -11,29 +11,18 @@ from torchvision import transforms
 from datetime import datetime
 import pytz
 from collections import defaultdict, deque
+
 from face_alignment.alignment import norm_crop
 from face_detection.scrfd.detector import SCRFD
 from face_recognition.arcface.model import iresnet_inference
 from face_recognition.arcface.utils import compare_encodings, read_features
 from face_tracking.byte_tracker.byte_tracker import BYTETracker
 from face_tracking.byte_tracker.visualize import plot_tracking
-from app.db.database import engine
-from app.db.crud import insert_log, init_db, update_daily_summary
-from app.db.database import get_db
 
-# Import shared state for GUI communication
-try:
-    from gui.shared_state import latest_frames, frame_lock, set_latest_frame
-    GUI_AVAILABLE = True
-except ImportError:
-    # Fallback if GUI is not available
-    latest_frames = {}
-    frame_lock = threading.Lock()
-    GUI_AVAILABLE = False
-    
-    def set_latest_frame(camera_id, frame):
-        with frame_lock:
-            latest_frames[camera_id] = frame.copy() if frame is not None else None
+from app.db.database import engine
+from app.db.crud import insert_log, init_db, _update_daily_summary
+from app.db.database import get_db
+from gui.components.shared_state import latest_frames, frame_lock
 
 # Logging setup
 logging.basicConfig(
@@ -43,7 +32,8 @@ logging.basicConfig(
 )
 
 class MultiCameraFaceRecognition:
-    def __init__(self, config_path="config/camera_config.yaml"):
+    def __init__(self, config_path="camera_config.yaml"):
+        self._running = False  # System running state flag
         self.config = self.load_config(config_path)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[INFO] Using device: {self.device}")
@@ -53,7 +43,6 @@ class MultiCameraFaceRecognition:
         
         # Load face database
         self.images_names, self.images_embs = read_features("./datasets/face_features/feature")
-        print(f"[INFO] Loaded {len(self.images_names)} known faces")
         
         # Threading and data structures
         self.camera_data = {}
@@ -62,8 +51,7 @@ class MultiCameraFaceRecognition:
         self.id_face_mapping = defaultdict(dict)
         self.last_logged_time = {}
         self.recognition_history = defaultdict(lambda: deque(maxlen=3))
-        self.running = False
-        self.threads = []
+        self.worker_threads = []  # Track all worker threads
         
         # Create snapshots directory
         os.makedirs("snapshots", exist_ok=True)
@@ -75,459 +63,447 @@ class MultiCameraFaceRecognition:
         self.max_width = self.config['performance']['max_resolution_width']
         
         # Initialize global frames dict
+        global latest_frames
         for cam in self.config['cameras']:
             if cam.get('enabled', True):
-                set_latest_frame(cam['camera_id'], np.zeros((480, 640, 3), dtype=np.uint8))
+                latest_frames[cam['camera_id']] = np.zeros((480, 640, 3), dtype=np.uint8)
     
     def load_config(self, config_path):
         """Load camera configuration from YAML file"""
-        try:
-            with open(config_path, 'r') as file:
-                config = yaml.safe_load(file)
-                print(f"[INFO] Loaded configuration from {config_path}")
-                return config
-        except FileNotFoundError:
-            print(f"[ERROR] Configuration file not found: {config_path}")
-            return self._default_config()
-        except yaml.YAMLError as e:
-            print(f"[ERROR] Error parsing YAML file: {e}")
-            return self._default_config()
-    
-    def _default_config(self):
-        """Return default configuration if config file is not found"""
-        return {
-            'cameras': [
-                {
-                    'camera_id': 'entry_01',
-                    'name': 'Entry Camera',
-                    'url': 0,
-                    'enabled': True,
-                    'location': 'Main Entrance',
-                    'event_type': 'entry'
-                }
-            ],
-            'recognition': {
-                'confidence_threshold': 0.6,
-                'logging_interval': 30,
-                'frame_skip': 3
-            },
-            'performance': {
-                'max_resolution_width': 640,
-                'recognition_interval': 0.5
-            },
-            'tracking': {
-                'track_thresh': 0.6,
-                'track_buffer': 30,
-                'match_thresh': 0.8,
-                'frame_rate': 30,
-                'min_box_area': 1000,
-                'aspect_ratio_thresh': 1.8
-            }
-        }
+        with open(config_path, 'r') as file:
+            return yaml.safe_load(file)
     
     def _init_models(self):
-        """Initialize face detection, recognition, and tracking models"""
-        try:
-            # Initialize face detection model
-            self.face_detector = SCRFD(model_file="./face_detection/scrfd/weights/scrfd_10g_bnkps.onnx")
-            print("[INFO] Face detector initialized")
-            
-            # Initialize face recognition model
-            self.face_recognizer = iresnet_inference(
-                model_name="r100", 
-                path="./face_recognition/arcface/weights/arcface_r100.pth", 
-                device=self.device
-            )
-            print("[INFO] Face recognizer initialized")
-            
-            # Initialize tracking for each camera
-            self.trackers = {}
-            for cam in self.config['cameras']:
-                if cam.get('enabled', True):
-                    tracker_config = self.config.get('tracking', {})
-                    self.trackers[cam['camera_id']] = BYTETracker(
-                        track_thresh=tracker_config.get('track_thresh', 0.6),
-                        track_buffer=tracker_config.get('track_buffer', 30),
-                        match_thresh=tracker_config.get('match_thresh', 0.8),
-                        frame_rate=tracker_config.get('frame_rate', 30)
-                    )
-            
-            print("[INFO] All models initialized successfully")
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to initialize models: {e}")
-            raise
+        """Initialize face detection and recognition models"""
+        self.detector = SCRFD(model_file="face_detection/scrfd/weights/scrfd_2.5g_bnkps.onnx")
+        self.recognizer = iresnet_inference(
+            "r100", 
+            "face_recognition/arcface/weights/arcface_r100.pth", 
+            self.device
+        )
+        self.recognizer.eval()
+        
+        self.face_preprocess = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize((112, 112)),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
     
-    def preprocess_frame(self, frame):
-        """Preprocess frame for better performance"""
-        if frame is None:
+    @torch.no_grad()
+    def get_feature(self, face_image):
+        """Extract features from face image"""
+        try:
+            face_rgb = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
+            face_tensor = self.face_preprocess(face_rgb).unsqueeze(0).to(self.device)
+            emb = self.recognizer(face_tensor).cpu().numpy()
+            return emb / np.linalg.norm(emb)
+        except Exception as e:
+            print(f"[WARNING] Feature extraction failed: {e}")
             return None
-        
-        # Resize frame if too large
-        height, width = frame.shape[:2]
-        if width > self.max_width:
-            scale = self.max_width / width
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-            frame = cv2.resize(frame, (new_width, new_height))
-        
-        return frame
     
-    def detect_and_recognize_faces(self, frame, camera_id):
-        """Detect and recognize faces in a frame"""
-        if frame is None:
-            return [], []
+    def recognize_face(self, face_image):
+        """Recognize a single face"""
+        emb = self.get_feature(face_image)
+        if emb is None:
+            return 0.0, "UN_KNOWN"
         
-        try:
-            # Detect faces
-            bboxes, kpss = self.face_detector.detect(frame, input_size=(640, 640))
-            
-            if len(bboxes) == 0:
-                return [], []
-            
-            # Prepare data for tracking
-            detections = []
-            embeddings = []
-            
-            for i, (bbox, kps) in enumerate(zip(bboxes, kpss)):
-                # Extract face region
-                face_img = norm_crop(frame, kps, image_size=112)
-                
-                # Get face embedding
-                embedding = self.face_recognizer(face_img)
-                embeddings.append(embedding)
-                
-                # Prepare detection for tracking (x1, y1, x2, y2, confidence)
-                detection = [bbox[0], bbox[1], bbox[2], bbox[3], bbox[4]]
-                detections.append(detection)
-            
-            return detections, embeddings
-            
-        except Exception as e:
-            print(f"[ERROR] Face detection/recognition failed for camera {camera_id}: {e}")
-            return [], []
+        score, id_min = compare_encodings(emb, self.images_embs)
+        name = self.images_names[id_min]
+        return score[0], name
     
-    def recognize_face(self, embedding):
-        """Match face embedding against known faces"""
-        if len(self.images_embs) == 0:
-            return "Unknown", 0.0
+    def mapping_bbox(self, box1, box2):
+        """Calculate IoU between two bounding boxes"""
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
         
-        # Compare with known faces
-        similarities = compare_encodings(embedding, self.images_embs)
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
         
-        if len(similarities) > 0:
-            max_sim = np.max(similarities)
-            if max_sim >= self.confidence_threshold:
-                max_idx = np.argmax(similarities)
-                return self.images_names[max_idx], max_sim
+        inter = (x2 - x1) * (y2 - y1)
+        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
         
-        return "Unknown", 0.0
+        return inter / (area1 + area2 - inter)
     
-    def update_tracking(self, camera_id, detections):
-        """Update tracking for a camera"""
-        if camera_id not in self.trackers:
-            return []
+    def should_log_person(self, person_name, tracking_id, camera_id):
+        """Check if person should be logged based on time interval"""
+        now = time.time()
+        key = f"{camera_id}_{person_name}_{tracking_id}"
         
-        if len(detections) == 0:
-            return []
-        
-        # Convert detections to numpy array
-        det_array = np.array(detections)
-        
-        # Update tracker
-        online_targets = self.trackers[camera_id].update(det_array)
-        
-        return online_targets
-    
-    def should_log_recognition(self, person_name, camera_id):
-        """Check if recognition should be logged based on time interval"""
-        current_time = time.time()
-        key = f"{person_name}_{camera_id}"
-        
-        if key not in self.last_logged_time:
-            self.last_logged_time[key] = current_time
+        if key not in self.last_logged_time or now - self.last_logged_time[key] >= self.logging_interval:
+            self.last_logged_time[key] = now
             return True
-        
-        if current_time - self.last_logged_time[key] >= self.logging_interval:
-            self.last_logged_time[key] = current_time
-            return True
-        
         return False
     
-    def save_snapshot(self, frame, person_name, camera_id):
-        """Save snapshot of recognized person"""
+    def is_stable_recognition(self, tracking_id, name, camera_id):
+        """Check if recognition is stable over multiple frames"""
+        key = f"{camera_id}_{tracking_id}"
+        self.recognition_history[key].append(name)
+        recent = list(self.recognition_history[key])
+        
+        if len(recent) < 2:
+            return False
+        
+        name_count = recent.count(name)
+        return name_count / len(recent) >= 0.6
+    
+    def log_attendance(self, person_name, tracking_id, score, camera_id, event_type):
+        """Log attendance to database with proper error handling"""
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"snapshots/{person_name}_{camera_id}_{timestamp}.jpg"
-            cv2.imwrite(filename, frame)
-            return filename
+            success = insert_log(
+                person_name=person_name,
+                camera_id=camera_id,
+                tracking_id=tracking_id,
+                confidence_score=float(score) if score else None,
+                event_type=event_type,
+                snapshot_path=f"snapshots/{camera_id}_{person_name}_{int(time.time())}.jpg"
+            )
+            
+            if success:
+                print(f"[DEBUG] Logged attendance for {person_name} at camera {camera_id}")
+            else:
+                print(f"[ERROR] Failed to log attendance for {person_name}")
+                
         except Exception as e:
-            print(f"[ERROR] Failed to save snapshot: {e}")
-            return None
-    
-    def log_recognition(self, person_name, camera_info, confidence, snapshot_path=None):
-        """Add recognition to log queue"""
-        ist = pytz.timezone('Asia/Kolkata')
-        timestamp = datetime.now(ist)
+            print(f"[ERROR] Attendance logging failed: {e}")
+
+    def camera_worker(self, camera_config):
+        """Worker thread for each camera"""
+        camera_id = camera_config['camera_id']
+        camera_url = camera_config['url']
+        event_type = camera_config['event_type']
         
-        log_entry = {
-            'person_name': person_name,
-            'camera_id': camera_info['camera_id'],
-            'camera_name': camera_info['name'],
-            'location': camera_info.get('location', 'Unknown'),
-            'timestamp': timestamp,
-            'confidence': confidence,
-            'snapshot_path': snapshot_path,
-            'event_type': camera_info.get('event_type', 'entry'),
-            'tracking_id': None  # Add tracking_id for consistency
-        }
-        
-        self.log_queue.put(log_entry)
-        
-        # Also log to file
-        logging.info(f"Recognized: {person_name} at {camera_info['name']} (confidence: {confidence:.2f})")
-    
-    def process_camera(self, camera_info):
-        """Process frames from a single camera"""
-        camera_id = camera_info['camera_id']
-        source = camera_info['source']
-        
-        print(f"[INFO] Starting camera {camera_id} ({camera_info['name']})")
+        print(f"[INFO] Starting camera worker for {camera_id}")
         
         # Initialize camera
-        cap = cv2.VideoCapture(source)
+        cap = cv2.VideoCapture(camera_url)
         if not cap.isOpened():
-            print(f"[ERROR] Failed to open camera {camera_id}")
+            print(f"[ERROR] Cannot connect to camera '{camera_id}' at {camera_url}")
             return
         
-        # Set camera properties
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        # Optimize camera settings
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FPS, 30)
         
+        # Load tracking config
+        with open("config/tracking_config.yaml", "r") as f:
+            track_config = yaml.safe_load(f)
+        
+        tracker = BYTETracker(args=track_config, frame_rate=30)
+        frame_id = 0
         frame_count = 0
+        fps = 0
+        start_time = time.time_ns()
         
-        try:
-            while self.running:
-                ret, frame = cap.read()
-                if not ret:
-                    print(f"[WARNING] Failed to read frame from camera {camera_id}")
-                    time.sleep(0.1)
-                    continue
+        while self._running:
+            ret, frame = cap.read()
+            if not ret:
+                if not self._running:  # Check if we're shutting down
+                    break
+                print(f"[WARNING] Failed to read frame from camera {camera_id}")
+                time.sleep(0.1)
+                continue
+            
+            # Resize if too large
+            height, width = frame.shape[:2]
+            if width > self.max_width:
+                scale = self.max_width / width
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                frame = cv2.resize(frame, (new_width, new_height))
+            
+            # Skip frames for performance
+            frame_id += 1
+            if frame_id % self.frame_skip != 0:
+                continue
+            
+            # Detection and tracking
+            outputs, img_info, bboxes, landmarks = self.detector.detect_tracking(image=frame)
+            
+            tracking_bboxes = []
+            tracking_ids = []
+            tracking_tlwhs = []
+            
+            if outputs is not None:
+                online_targets = tracker.update(
+                    outputs, 
+                    [img_info["height"], img_info["width"]], 
+                    (128, 128)
+                )
                 
-                # Preprocess frame
-                frame = self.preprocess_frame(frame)
-                if frame is None:
-                    continue
+                for t in online_targets:
+                    tlwh = t.tlwh
+                    tid = t.track_id
+                    if (tlwh[2] * tlwh[3] > track_config["min_box_area"] and 
+                        tlwh[2] / tlwh[3] <= track_config["aspect_ratio_thresh"]):
+                        x1, y1, w, h = tlwh
+                        tracking_bboxes.append([int(x1), int(y1), int(x1 + w), int(y1 + h)])
+                        tracking_tlwhs.append(tlwh)
+                        tracking_ids.append(tid)
                 
-                # Update shared frame for GUI
-                set_latest_frame(camera_id, frame)
+                # Create tracking visualization
+                tracking_image = plot_tracking(
+                    img_info["raw_img"], 
+                    tracking_tlwhs, 
+                    tracking_ids,
+                    names=self.id_face_mapping[camera_id], 
+                    frame_id=frame_id, 
+                    fps=fps
+                )
                 
-                # Skip frames for performance
-                if frame_count % self.frame_skip != 0:
-                    frame_count += 1
-                    continue
-                
-                # Detect and recognize faces
-                detections, embeddings = self.detect_and_recognize_faces(frame, camera_id)
-                
-                if len(detections) > 0:
-                    # Update tracking
-                    online_targets = self.update_tracking(camera_id, detections)
+                # Update global frame
+                with frame_lock:
+                    latest_frames[camera_id] = tracking_image.copy()
+            else:
+                tracking_image = img_info["raw_img"]
+                with frame_lock:
+                    latest_frames[camera_id] = tracking_image.copy()
+            
+            # Update shared data
+            with self.data_lock:
+                self.camera_data[camera_id] = {
+                    "raw_image": img_info["raw_img"].copy(),
+                    "detection_bboxes": bboxes if bboxes is not None else [],
+                    "detection_landmarks": landmarks if landmarks is not None else [],
+                    "tracking_ids": tracking_ids,
+                    "tracking_bboxes": tracking_bboxes,
+                    "event_type": event_type
+                }
+            
+            # Calculate FPS
+            frame_count += 1
+            if frame_count >= 30:
+                fps = 1e9 * frame_count / (time.time_ns() - start_time)
+                frame_count = 0
+                start_time = time.time_ns()
+        
+        cap.release()
+        print(f"[INFO] Camera worker {camera_id} stopped")
+
+    def recognition_worker(self):
+        """Recognition worker for all cameras"""
+        print("[INFO] Starting recognition worker")
+        
+        while self._running:
+            time.sleep(self.config['performance']['recognition_interval'])
+            
+            with self.data_lock:
+                camera_data_copy = self.camera_data.copy()
+            
+            for camera_id, data in camera_data_copy.items():
+                if not self._running:  # Check if we should stop
+                    break
                     
-                    # Process each tracked target
-                    for i, (target, embedding) in enumerate(zip(online_targets, embeddings)):
-                        if i >= len(embeddings):
-                            break
-                        
-                        # Recognize face
-                        person_name, confidence = self.recognize_face(embedding)
-                        
-                        # Update recognition history for stability
-                        track_id = target.track_id
-                        self.recognition_history[f"{camera_id}_{track_id}"].append((person_name, confidence))
-                        
-                        # Get most common recognition
-                        history = self.recognition_history[f"{camera_id}_{track_id}"]
-                        if len(history) >= 2:  # Wait for at least 2 recognitions
-                            names = [h[0] for h in history if h[1] >= self.confidence_threshold]
-                            if names:
-                                # Get most common name
-                                most_common = max(set(names), key=names.count)
-                                avg_confidence = np.mean([h[1] for h in history if h[0] == most_common])
-                                
-                                # Log if needed
-                                if (most_common != "Unknown" and 
-                                    self.should_log_recognition(most_common, camera_id)):
-                                    
-                                    # Save snapshot
-                                    snapshot_path = self.save_snapshot(frame, most_common, camera_id)
-                                    
-                                    # Log recognition
-                                    self.log_recognition(most_common, camera_info, avg_confidence, snapshot_path)
+                if data.get("raw_image") is None:
+                    continue
+                
+                raw_image = data["raw_image"]
+                detection_landmarks = data.get("detection_landmarks", [])
+                detection_bboxes = data.get("detection_bboxes", [])
+                tracking_ids = data.get("tracking_ids", [])
+                tracking_bboxes = data.get("tracking_bboxes", [])
+                
+                # Convert bboxes to lists if needed
+                if hasattr(detection_bboxes, 'tolist'):
+                    detection_bboxes = detection_bboxes.tolist() if detection_bboxes is not None else []
+                if hasattr(tracking_bboxes, 'tolist'):
+                    tracking_bboxes = tracking_bboxes.tolist() if tracking_bboxes is not None else []
+                
+                if detection_landmarks is None:
+                    detection_landmarks = []
+                
+                event_type = data.get("event_type", "login")
+                
+                if len(tracking_bboxes) == 0 or len(detection_bboxes) == 0:
+                    continue
+                
+                # Process each tracked face
+                for i, track_box in enumerate(tracking_bboxes):
+                    best_match_idx = -1
+                    best_iou = 0
                     
-                    # Draw tracking results
-                    frame = plot_tracking(frame, online_targets, frame_id=frame_count)
-                
-                # Store processed frame
-                with self.data_lock:
-                    self.camera_data[camera_id] = {
-                        'frame': frame.copy(),
-                        'detections': len(detections),
-                        'timestamp': time.time()
-                    }
-                
-                frame_count += 1
-                
-        except Exception as e:
-            print(f"[ERROR] Error in camera {camera_id} processing: {e}")
-            logging.error(f"Camera {camera_id} error: {e}")
-        
-        finally:
-            cap.release()
-            print(f"[INFO] Camera {camera_id} stopped")
-    
-    def database_worker(self):
-        """Worker thread for database operations"""
-        print("[INFO] Database worker started")
-        
-        while self.running or not self.log_queue.empty():
-            try:
-                # Get log entry with timeout
-                log_entry = self.log_queue.get(timeout=1)
-                
-                # Insert into database with proper error handling
-                try:
-                    with next(get_db()) as db:
-                        # Ensure log_entry has all required fields
-                        if 'event_type' not in log_entry:
-                            log_entry['event_type'] = 'entry'
-                        if 'tracking_id' not in log_entry:
-                            log_entry['tracking_id'] = None
+                    # Find best matching detection
+                    for j, detect_box in enumerate(detection_bboxes):
+                        iou = self.mapping_bbox(track_box, detect_box)
+                        if iou > best_iou and iou > 0.7:
+                            best_iou = iou
+                            best_match_idx = j
+                    
+                    if best_match_idx == -1:
+                        continue
+                    
+                    try:
+                        # Extract landmark
+                        if len(detection_landmarks) <= best_match_idx:
+                            continue
                             
-                        result = insert_log(db, log_entry)
+                        landmark = detection_landmarks[best_match_idx]
                         
-                        # Update daily summary with just the date
-                        update_daily_summary(db, log_entry['timestamp'].date())
+                        if isinstance(landmark, list):
+                            landmark = np.array(landmark)
                         
-                        print(f"[INFO] Logged: {log_entry['person_name']} at {log_entry['camera_name']}")
+                        if landmark is None or len(landmark) == 0:
+                            continue
                         
-                except Exception as db_error:
-                    print(f"[ERROR] Database insert failed: {db_error}")
-                    import traceback
-                    traceback.print_exc()
-                    # Continue processing other entries
-                    continue
-                
+                        if landmark.shape != (5, 2):
+                            print(f"[WARNING] Invalid landmark shape: {landmark.shape}, expected (5, 2)")
+                            continue
+                            
+                        face = norm_crop(img=raw_image, landmark=landmark)
+                        if face is None or face.size == 0:
+                            continue
+                        
+                        score, name = self.recognize_face(face)
+                        tracking_id = tracking_ids[i]
+                        
+                        print(f"[DEBUG] Camera {camera_id}: Recognized {name} with score {score:.3f}")
+                        
+                        if score < self.confidence_threshold:
+                            name = "UN_KNOWN"
+                        
+                        if name != "UN_KNOWN" and not self.is_stable_recognition(tracking_id, name, camera_id):
+                            print(f"[DEBUG] Unstable recognition for {name}, waiting for stability")
+                            continue
+                        
+                        # Update display mapping
+                        display_name = name if name == "UN_KNOWN" else f"{name}:{score:.2f}"
+                        self.id_face_mapping[camera_id][tracking_id] = display_name
+                        
+                        # Log attendance
+                        if self.should_log_person(name, tracking_id, camera_id):
+                            snapshot_path = f"snapshots/{camera_id}_{name}_{int(time.time())}.jpg"
+                            cv2.imwrite(snapshot_path, raw_image)
+                            print(f"[INFO] Logging attendance: {name} from camera {camera_id}")
+                            
+                            self.log_attendance(
+                                name, tracking_id, 
+                                score if name != "UN_KNOWN" else None,
+                                camera_id, event_type
+                            )
+                    
+                    except Exception as e:
+                        print(f"[WARNING] Recognition failed for camera {camera_id}: {e}")
+                        continue
+        
+        print("[INFO] Recognition worker stopped")
+
+    def log_worker(self):
+        """Database logging worker"""
+        print("[INFO] Starting log worker")
+
+        while self._running:
+            try:
+                log_entry = self.log_queue.get(timeout=1)
+                if log_entry is None:  # Shutdown signal
+                    break
+                    
+                print(f"[DEBUG] Processing log: {log_entry[0]} from camera {log_entry[3]}")
+                insert_log(*log_entry)
+                self.log_queue.task_done()
             except Empty:
                 continue
             except Exception as e:
-                print(f"[ERROR] Database worker error: {e}")
-                logging.error(f"Database worker error: {e}")
-                time.sleep(1)
+                print(f"[ERROR] Database logging failed: {e}")
+                import traceback
+                traceback.print_exc()
         
-        print("[INFO] Database worker stopped")
+        print("[INFO] Log worker stopped")
     
     def start(self):
         """Start the multi-camera recognition system"""
-        if self.running:
+        if self._running:
             print("[WARNING] System is already running")
             return
-        
-        self.running = True
+            
+        print("[INFO] Initializing multi-camera face recognition system...")
+        self._running = True
         
         # Initialize database
-        try:
-            init_db()
-            print("[INFO] Database initialized")
-        except Exception as e:
-            print(f"[ERROR] Failed to initialize database: {e}")
+        init_db()
+        
+        # Get enabled cameras
+        enabled_cameras = [cam for cam in self.config['cameras'] if cam.get('enabled', True)]
+        
+        if not enabled_cameras:
+            print("[ERROR] No enabled cameras found in configuration")
             return
         
-        # Start database worker
-        db_thread = threading.Thread(target=self.database_worker, daemon=True)
-        db_thread.start()
-        self.threads.append(db_thread)
+        print(f"[INFO] Found {len(enabled_cameras)} enabled cameras")
         
-        # Start camera threads
-        for camera_info in self.config['cameras']:
-            if camera_info.get('enabled', True):
-                thread = threading.Thread(
-                    target=self.process_camera, 
-                    args=(camera_info,), 
-                    daemon=True
-                )
-                thread.start()
-                self.threads.append(thread)
+        # Clear any existing worker threads
+        self.worker_threads = []
         
-        print(f"[INFO] Started {len([c for c in self.config['cameras'] if c.get('enabled', True)])} camera(s)")
-    
+        # Start log worker
+        log_thread = threading.Thread(target=self.log_worker, daemon=True)
+        log_thread.start()
+        self.worker_threads.append(log_thread)
+        
+        # Start recognition worker
+        recognition_thread = threading.Thread(target=self.recognition_worker, daemon=True)
+        recognition_thread.start()
+        self.worker_threads.append(recognition_thread)
+        
+        # Start camera workers
+        for camera_config in enabled_cameras:
+            camera_thread = threading.Thread(
+                target=self.camera_worker, 
+                args=(camera_config,), 
+                daemon=True
+            )
+            camera_thread.start()
+            self.worker_threads.append(camera_thread)
+        
+        print("[INFO] All workers started.")
+        print("[INFO] Access camera streams at:")
+        for cam in enabled_cameras:
+            print(f"  - {cam['camera_id']}: http://localhost:8000/stream/{cam['camera_id']}")
+
     def stop(self):
-        """Stop the multi-camera recognition system"""
-        if not self.running:
+        """Stop the recognition system"""
+        if not self._running:
             print("[WARNING] System is not running")
             return
-        
-        print("[INFO] Stopping system...")
-        self.running = False
-        
-        # Wait for threads to finish
-        for thread in self.threads:
-            thread.join(timeout=5)
-        
-        self.threads.clear()
-        print("[INFO] System stopped")
-    
-    def get_camera_frame(self, camera_id):
-        """Get the latest frame from a camera"""
-        with self.data_lock:
-            if camera_id in self.camera_data:
-                return self.camera_data[camera_id]['frame'].copy()
-        return None
-    
-    def get_system_status(self):
-        """Get system status information"""
-        with self.data_lock:
-            status = {
-                'running': self.running,
-                'cameras': {},
-                'total_known_faces': len(self.images_names),
-                'active_cameras': len(self.camera_data)
-            }
             
-            for camera_id, data in self.camera_data.items():
-                status['cameras'][camera_id] = {
-                    'detections': data['detections'],
-                    'last_update': data['timestamp']
-                }
-            
-            return status
+        print("[INFO] Stopping recognition system...")
+        self._running = False  # Signal all workers to stop
+        
+        # Send shutdown signal to log worker
+        self.log_queue.put(None)
+        
+        # Wait for threads to finish with timeout
+        stop_timeout = 3  # seconds
+        start_time = time.time()
+        
+        for thread in self.worker_threads:
+            remaining_time = stop_timeout - (time.time() - start_time)
+            if remaining_time > 0:
+                thread.join(timeout=remaining_time)
+                if thread.is_alive():
+                    print(f"[WARNING] Thread {thread.name} did not stop gracefully")
+        
+        # Clear camera data
+        with self.data_lock:
+            self.camera_data.clear()
+        
+        # Clear shared frames
+        with frame_lock:
+            for cam_id in list(latest_frames.keys()):
+                latest_frames[cam_id] = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        print("[INFO] Recognition system stopped")
 
 def main():
-    """Main function to run the multi-camera face recognition system"""
-    # Create system instance
-    system = MultiCameraFaceRecognition()
+    """Main function"""
+    recognition_system = MultiCameraFaceRecognition("camera_config.yaml")
+    recognition_system.start()
     
     try:
-        # Start the system
-        system.start()
-        
-        print("[INFO] System running. Press Ctrl+C to stop...")
-        
-        # Keep main thread alive
-        while system.running:
+        while True:
             time.sleep(1)
-            
-            # Print status every 30 seconds
-            if int(time.time()) % 30 == 0:
-                status = system.get_system_status()
-                print(f"[STATUS] Active cameras: {status['active_cameras']}, Known faces: {status['total_known_faces']}")
-    
     except KeyboardInterrupt:
-        print("\n[INFO] Shutting down...")
-    
-    finally:
-        system.stop()
+        recognition_system.stop()
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

@@ -1,5 +1,4 @@
-# app/db/schemas.py
-from datetime import datetime
+from datetime import datetime, date, timedelta  # Add missing imports
 from pydantic import BaseModel
 from typing import Optional
 
@@ -11,10 +10,11 @@ class LogCreate(BaseModel):
     event_type: str
     snapshot_path: str
     timestamp: datetime
+
 class DailySummaryBase(BaseModel):
     person_name: str
     date: date
-    camera_id: str  # New field
+    camera_id: str
     first_login: Optional[datetime] = None
     last_logout: Optional[datetime] = None
 

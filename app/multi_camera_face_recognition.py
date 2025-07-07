@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import yaml
 import os
+import io
 from queue import Queue, Empty
 from torchvision import transforms
 from datetime import datetime
@@ -23,6 +24,11 @@ from app.db.database import engine
 from app.db.crud import insert_log, init_db, _update_daily_summary
 from app.db.database import get_db
 from gui.components.shared_state import latest_frames, frame_lock
+
+# from app.db.crud import get_all_persons_with_features
+from app.db.database import get_db
+from app.db.models import Person, FaceFeature, FaceImage, Camera
+from sqlalchemy.orm import joinedload
 
 # Logging setup
 logging.basicConfig(
@@ -42,7 +48,13 @@ class MultiCameraFaceRecognition:
         self._init_models()
         
         # Load face database
-        self.images_names, self.images_embs = read_features("./datasets/face_features/feature")
+        # self.images_names, self.images_embs = read_features("./datasets/face_features/feature")
+
+        self.images_names = []
+        self.images_embs = []
+        self.load_face_database()  # This will populate the above lists from DB
+
+
         
         # Threading and data structures
         self.camera_data = {}
@@ -67,6 +79,8 @@ class MultiCameraFaceRecognition:
         for cam in self.config['cameras']:
             if cam.get('enabled', True):
                 latest_frames[cam['camera_id']] = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        self.load_face_database()
     
     def load_config(self, config_path):
         """Load camera configuration from YAML file"""
@@ -410,7 +424,78 @@ class MultiCameraFaceRecognition:
                 traceback.print_exc()
         
         print("[INFO] Log worker stopped")
-    
+
+
+    def load_face_database(self):
+        """Load face database from PostgreSQL"""
+        try:
+            db = next(get_db())
+            persons = db.query(Person).options(
+                joinedload(Person.face_features)
+            ).all()
+            
+            self.images_names = []
+            self.images_embs = []
+            
+            for person in persons:
+                for feature in person.face_features:
+                    # Convert bytes back to numpy array
+                    buf = io.BytesIO(feature.embedding)
+                    emb = np.load(buf)
+                    
+                    self.images_names.append(person.name)
+                    self.images_embs.append(emb)
+            
+            if self.images_embs:
+                self.images_embs = np.vstack(self.images_embs)
+            else:
+                self.images_embs = np.empty((0, 512))  # Adjust dimension based on your model
+                print("[WARNING] No face features found in database")
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to load face database: {e}")
+            # Fallback to empty arrays to prevent crashes
+            self.images_names = []
+            self.images_embs = np.empty((0, 512))
+            
+
+    # In MultiCameraFaceRecognition class
+    def load_camera_config(self):
+        """Load camera configuration from database"""
+        try:
+            db = next(get_db())
+            cameras = db.query(Camera).filter(Camera.is_enabled == True).all()
+            
+            self.config = {
+                'cameras': [],
+                'recognition': {
+                    'confidence_threshold': 0.40,
+                    'logging_interval': 500,
+                    'frame_skip': 2
+                },
+                'performance': {
+                    'max_resolution_width': 1280,
+                    'recognition_interval': 0.1
+                }
+            }
+            
+            for camera in cameras:
+                self.config['cameras'].append({
+                    'camera_id': camera.camera_id,
+                    'name': camera.camera_name,
+                    'url': camera.url,
+                    'enabled': camera.is_enabled,
+                    'location': camera.location,
+                    'event_type': camera.event_type
+                })
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to load camera config from database: {e}")
+            # Fallback to YAML config
+            with open(self.config_path, 'r') as file:
+                self.config = yaml.safe_load(file)
+
+
     def start(self):
         """Start the multi-camera recognition system"""
         if self._running:

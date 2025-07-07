@@ -12,9 +12,9 @@ class LogCreate(BaseModel):
     timestamp: datetime
 
 class DailySummaryBase(BaseModel):
-    person_name: str
-    date: date
+    person_id: int
     camera_id: str
+    date: date
     first_login: Optional[datetime] = None
     last_logout: Optional[datetime] = None
 
@@ -28,6 +28,6 @@ class DailySummary(DailySummaryBase):
     working_hours: Optional[timedelta] = None
     created_at: datetime
     updated_at: datetime
-
+    
     class Config:
         orm_mode = True

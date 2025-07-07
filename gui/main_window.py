@@ -6,7 +6,9 @@ from gui.components.camera_feed import CameraFeed
 from gui.components.logs_view import LogsView
 from gui.components.summary_view import SummaryView
 from gui.styles import configure_styles
-from app.recognition import MultiCameraFaceRecognition
+from app.multi_camera_face_recognition import MultiCameraFaceRecognition
+from gui.components.person_management import PersonManagementView
+from gui.components.camera_management import CameraManagementView
 from app.db.crud import init_db
 from typing import List, Dict
 import threading
@@ -83,6 +85,15 @@ class MainApp:
         # Summary Tab
         self.summary_tab = SummaryView(self.notebook)
         self.notebook.add(self.summary_tab, text="Daily Summaries")
+
+        # Add Person Management Tab
+        self.person_tab = PersonManagementView(self.notebook)
+        self.notebook.add(self.person_tab, text="Person Management")
+
+        # Add Camera Management Tab
+        self.camera_mgmt_tab = CameraManagementView(self.notebook)
+        self.notebook.add(self.camera_mgmt_tab, text="Camera Management")
+
 
     def setup_camera_tab(self):
         self.camera_tab = ttk.Frame(self.notebook)

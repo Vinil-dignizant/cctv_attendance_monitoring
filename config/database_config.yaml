@@ -1,0 +1,5 @@
+# config/database_config.yaml
+storage:
+  face_images: "datasets/face_images"  # Where to store full-size face images
+  snapshots: "snapshots"              # Where to store recognition snapshots
+  temp: "temp"                        # For temporary processing files

@@ -2,7 +2,7 @@ cameras:
   - camera_id: "entry_01"
     name: "Entry Camera"
     url: "rtsp://admin:Vinil@123@192.168.0.150:554/h264/ch1/main/av_stream"
-    enabled: ture
+    enabled: false
     location: "Main Entrance"
     event_type: "login"
 

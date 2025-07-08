@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import List, Dict, Optional
 from app.db.crud import (
-    create_camera, get_all_cameras, 
+    create_camera, get_all_cameras, get_camera, 
     update_camera, delete_camera
 )
 from app.db.database import get_db
@@ -175,9 +175,10 @@ class CameraManagementView(ttk.Frame):
             messagebox.showerror("Error", "Camera not found")
             return
             
-        # Create edit dialog (similar to add dialog but with existing values)
+        # Create edit dialog
         dialog = tk.Toplevel(self)
         dialog.title(f"Edit Camera {camera_id}")
+        dialog.resizable(False, False)
         
         # Form fields with existing values
         ttk.Label(dialog, text="Camera ID:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
@@ -188,7 +189,23 @@ class CameraManagementView(ttk.Frame):
         name.insert(0, camera.camera_name or "")
         name.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         
-        # ... other fields similar to add dialog ...
+        ttk.Label(dialog, text="Location:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        location = ttk.Entry(dialog)
+        location.insert(0, camera.location or "")
+        location.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        
+        ttk.Label(dialog, text="URL:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        url = ttk.Entry(dialog)
+        url.insert(0, camera.url or "")
+        url.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        
+        ttk.Label(dialog, text="Event Type:").grid(row=4, column=0, padx=5, pady=5, sticky="e")
+        event_type = ttk.Combobox(dialog, values=["login", "logout"])
+        event_type.set(camera.event_type)
+        event_type.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
+        
+        enabled = tk.BooleanVar(value=camera.is_enabled)
+        ttk.Checkbutton(dialog, text="Enabled", variable=enabled).grid(row=5, column=1, padx=5, pady=5, sticky="w")
         
         # Buttons
         btn_frame = ttk.Frame(dialog)
@@ -198,8 +215,12 @@ class CameraManagementView(ttk.Frame):
             btn_frame,
             text="Save",
             command=lambda: self.update_camera(
-                dialog, camera_id, name.get(),
-                # ... other fields ...
+                dialog, camera_id, 
+                name.get(),
+                location.get(),
+                url.get(),
+                event_type.get(),
+                enabled.get()
             )
         ).pack(side=tk.LEFT, padx=5)
         
@@ -209,11 +230,19 @@ class CameraManagementView(ttk.Frame):
             command=dialog.destroy
         ).pack(side=tk.LEFT, padx=5)
 
-    def update_camera(self, dialog, camera_id, **kwargs):
+    def update_camera(self, dialog, camera_id, name, location, url, event_type, enabled):
         """Update camera in database"""
         try:
             db = next(get_db())
-            if update_camera(db, camera_id, **kwargs):
+            if update_camera(
+                db, 
+                camera_id,
+                camera_name=name or None,
+                location=location or None,
+                url=url or None,
+                event_type=event_type,
+                is_enabled=enabled
+            ):
                 dialog.destroy()
                 self.load_cameras()
             else:

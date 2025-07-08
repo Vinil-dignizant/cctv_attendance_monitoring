@@ -39,19 +39,20 @@ class LogsView(ttk.Frame):
         self.tree.heading("timestamp", text="Timestamp")
         
         self.tree.column("id", width=50, anchor=tk.CENTER)
-        self.tree.column("name", width=150, anchor=tk.W)
+        self.tree.column("name", width=200, anchor=tk.W)
         self.tree.column("camera", width=100, anchor=tk.CENTER)
-        self.tree.column("confidence", width=80, anchor=tk.CENTER)
-        self.tree.column("timestamp", width=180, anchor=tk.CENTER)
+        self.tree.column("confidence", width=100, anchor=tk.CENTER)
+        self.tree.column("timestamp", width=200, anchor=tk.CENTER)
         
         # Add scrollbar
-        scrollbar = ttk.Scrollbar(
+        # Add horizontal scrollbar
+        h_scrollbar = ttk.Scrollbar(
             self.tree_frame,
-            orient=tk.VERTICAL,
-            command=self.tree.yview
+            orient=tk.HORIZONTAL,
+            command=self.tree.xview
         )
-        self.tree.configure(yscroll=scrollbar.set)
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(xscrollcommand=h_scrollbar.set)
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
         self.tree.grid(row=0, column=0, sticky="nsew")
         
         # Status bar

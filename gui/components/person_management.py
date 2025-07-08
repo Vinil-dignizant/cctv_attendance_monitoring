@@ -2,6 +2,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
+from app.db.models import FaceFeature, FaceImage, Person
 import cv2
 import numpy as np
 from typing import List, Optional
@@ -103,6 +104,11 @@ class PersonManagementView(ttk.Frame):
             label="Delete",
             command=self.delete_selected_person
         )
+        # Add Edit option to context menu
+        self.tree_menu.add_command(
+            label="Edit",
+            command=self.edit_selected_person
+        )
         self.person_tree.bind("<Button-3>", self.show_tree_menu)
 
     def setup_edit_tab(self):
@@ -161,24 +167,32 @@ class PersonManagementView(ttk.Frame):
             command=lambda: self.notebook.select(0)
         ).pack(side=tk.RIGHT, padx=5)
 
-    def load_persons(self):
+    def load_persons(self, db=None):
         """Load all persons from database"""
-        db = next(get_db())
-        persons = get_all_persons(db)
+        close_db = False
+        if db is None:
+            db = next(get_db())
+            close_db = True
         
-        # Clear existing data
-        for item in self.person_tree.get_children():
-            self.person_tree.delete(item)
-        
-        # Add persons to treeview
-        for person in persons:
-            self.person_tree.insert("", tk.END, values=(
-                person.id,
-                person.name,
-                person.employee_id,
-                person.department,
-                len(person.face_features)
-            ))
+        try:
+            persons = get_all_persons(db)
+            
+            # Clear existing data
+            for item in self.person_tree.get_children():
+                self.person_tree.delete(item)
+            
+            # Add persons to treeview
+            for person in persons:
+                self.person_tree.insert("", tk.END, values=(
+                    person.id,
+                    person.name,
+                    person.employee_id,
+                    person.department,
+                    len(person.face_features)
+                ))
+        finally:
+            if close_db:
+                db.close()
 
     def load_image(self):
         """Load image from file"""
@@ -210,51 +224,98 @@ class PersonManagementView(ttk.Frame):
                 self.image_label.config(image=None)
 
     def save_person(self):
-        """Save person data to database"""
+        """Save person data to database - handles both new and existing persons"""
         name = self.name_var.get().strip()
         if not name:
             messagebox.showerror("Error", "Name is required")
             return
         
-        # Fix: Check if current_image is None or empty array
-        if self.current_image is None or self.current_image.size == 0:
-            messagebox.showerror("Error", "Please load a face image")
-            return
-        
+        db = None
         try:
             db = next(get_db())
             
-            # Create person
-            person = create_person(
-                db=db,
-                name=name,
-                email=self.email_var.get().strip() or None,
-                department=self.dept_var.get().strip() or None,
-                employee_id=self.emp_id_var.get().strip() or None
-            )
+            if self.current_person:
+                # Re-load the person in the current session
+                current_person = db.query(Person).get(self.current_person.id)
+                if not current_person:
+                    messagebox.showerror("Error", "Person not found in database")
+                    return
+                    
+                # Update existing person
+                current_person.name = name
+                current_person.email = self.email_var.get().strip() or None
+                current_person.department = self.dept_var.get().strip() or None
+                current_person.employee_id = self.emp_id_var.get().strip() or None
+                
+                # Only update face features if new image was loaded
+                if self.current_image is not None and self.current_image.size > 0:
+                    # Delete old features and images
+                    db.query(FaceFeature).filter(FaceFeature.person_id == current_person.id).delete()
+                    db.query(FaceImage).filter(FaceImage.person_id == current_person.id).delete()
+                    
+                    # Add new features and images
+                    face_emb = get_feature(self.current_image)
+                    add_face_feature(db, current_person.id, face_emb)
+                    
+                    # Save new image
+                    os.makedirs("datasets/face_images", exist_ok=True)
+                    image_path = f"datasets/face_images/{current_person.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                    cv2.imwrite(image_path, cv2.cvtColor(self.current_image, cv2.COLOR_RGB2BGR))
+                    
+                    # Save thumbnail
+                    thumbnail = cv2.resize(self.current_image, (100, 100))
+                    add_face_image(db, current_person.id, image_path, thumbnail)
+                
+                db.commit()
+                messagebox.showinfo("Success", "Person updated successfully")
+            else:
+                # Check if image is provided for new person
+                if self.current_image is None or self.current_image.size == 0:
+                    messagebox.showerror("Error", "Please load a face image for new person")
+                    return
+                    
+                # Create new person
+                person = create_person(
+                    db=db,
+                    name=name,
+                    email=self.email_var.get().strip() or None,
+                    department=self.dept_var.get().strip() or None,
+                    employee_id=self.emp_id_var.get().strip() or None
+                )
+                
+                # Process face image
+                face_emb = get_feature(self.current_image)
+                
+                # Save face feature
+                add_face_feature(db, person.id, face_emb)
+                
+                # Save image (store path only)
+                os.makedirs("datasets/face_images", exist_ok=True)
+                image_path = f"datasets/face_images/{person.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                cv2.imwrite(image_path, cv2.cvtColor(self.current_image, cv2.COLOR_RGB2BGR))
+                
+                # Save thumbnail in database
+                thumbnail = cv2.resize(self.current_image, (100, 100))
+                add_face_image(db, person.id, image_path, thumbnail)
+                
+                db.commit()
+                messagebox.showinfo("Success", "Person added successfully")
             
-            # Process face image
-            face_emb = get_feature(self.current_image)
-            
-            # Save face feature
-            add_face_feature(db, person.id, face_emb)
-            
-            # Save image (store path only)
-            os.makedirs("datasets/face_images", exist_ok=True)
-            image_path = f"datasets/face_images/{person.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-            cv2.imwrite(image_path, cv2.cvtColor(self.current_image, cv2.COLOR_RGB2BGR))
-            
-            # Save thumbnail in database
-            thumbnail = cv2.resize(self.current_image, (100, 100))
-            add_face_image(db, person.id, image_path, thumbnail)
-            
-            messagebox.showinfo("Success", "Person added successfully")
+            # Clear form and refresh
             self.clear_form()
+            self.current_person = None
             self.notebook.select(0)
-            self.load_persons()
-            
+            self.load_persons()  # Now this works without passing db
+                
         except Exception as e:
+            if db:
+                db.rollback()
             messagebox.showerror("Error", f"Failed to save person: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            if db:
+                db.close()
 
     def clear_form(self):
         """Clear the form fields"""
@@ -305,6 +366,48 @@ class PersonManagementView(ttk.Frame):
                         label.pack(side=tk.LEFT, padx=5, pady=5)
                     except:
                         continue
+
+    def edit_selected_person(self):
+        """Edit selected person"""
+        selected = self.person_tree.focus()
+        if not selected:
+            return
+        
+        person_id = self.person_tree.item(selected)['values'][0]
+        db = next(get_db())
+        try:
+            person = db.query(Person).get(person_id)
+            if person:
+                # Switch to edit tab
+                self.notebook.select(1)
+                
+                # Populate form fields
+                self.name_var.set(person.name)
+                self.emp_id_var.set(person.employee_id or "")
+                self.dept_var.set(person.department or "")
+                self.email_var.set(person.email or "")
+                
+                # Store just the ID, not the entire object
+                self.current_person = person
+                
+                # Load first face image if available
+                if person.face_images:
+                    try:
+                        image_path = person.face_images[0].image_path
+                        image = cv2.imread(image_path)
+                        if image is not None:
+                            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                            self.current_image = image
+                            
+                            # Display thumbnail
+                            img = Image.fromarray(image)
+                            img.thumbnail((300, 300))
+                            self.imgtk = ImageTk.PhotoImage(image=img)
+                            self.image_label.config(image=self.imgtk)
+                    except Exception as e:
+                        print(f"Error loading image: {e}")
+        finally:
+            db.close()
 
     def delete_selected_person(self):
         """Delete selected person"""

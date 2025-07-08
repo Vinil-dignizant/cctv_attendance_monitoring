@@ -1,7 +1,10 @@
 import argparse
 import os
 import shutil
+import time
 
+from app.db.crud import get_db
+from app.db.models import FaceFeature, FaceImage, Person
 import cv2
 import numpy as np
 import torch

@@ -1,0 +1,9 @@
+{
+    "DB_HOST": "localhost",
+    "DB_PORT": "5432",
+    "DB_NAME": "face_recognition_db",
+    "DB_USER": "face_recognition_user",
+    "DB_PASSWORD": "vinil123",
+    "PGTZ": "Asia/Kolkata",
+    "TZ": "Asia/Kolkata"
+}

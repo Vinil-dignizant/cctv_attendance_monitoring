@@ -12,7 +12,7 @@ class SummaryView(ttk.Frame):
     def __init__(self, parent, refresh_interval: int = 10000):
         super().__init__(parent)
         self.refresh_interval = refresh_interval
-        self.setup_ui()
+        self.setup_ui()  
         self.load_data()
         self.auto_refresh()
 
@@ -59,23 +59,24 @@ class SummaryView(ttk.Frame):
         self.tree.heading("logins", text="Total Logins")
         self.tree.heading("logouts", text="Total Logouts")
         
-        self.tree.column("name", width=120)
-        self.tree.column("date", width=80)
-        self.tree.column("camera", width=80)
-        self.tree.column("first_login", width=120)
-        self.tree.column("last_logout", width=120)
-        self.tree.column("hours", width=80)
-        self.tree.column("logins", width=70, anchor=tk.CENTER)
-        self.tree.column("logouts", width=70, anchor=tk.CENTER)
+        # Configure columns with more width
+        self.tree.column("name", width=200)  # Increased width
+        self.tree.column("date", width=120)  # Increased width
+        self.tree.column("camera", width=150)  # Increased width
+        self.tree.column("first_login", width=150)  # Increased width
+        self.tree.column("last_logout", width=150)  # Increased width
+        self.tree.column("hours", width=120)  # Increased width
+        self.tree.column("logins", width=100, anchor=tk.CENTER)  # Increased width
+        self.tree.column("logouts", width=100, anchor=tk.CENTER)  # Increased width
         
-        # Add scrollbar
-        scrollbar = ttk.Scrollbar(
+        # Add horizontal scrollbar
+        h_scrollbar = ttk.Scrollbar(
             self.tree_frame,
-            orient=tk.VERTICAL,
-            command=self.tree.yview
+            orient=tk.HORIZONTAL,
+            command=self.tree.xview
         )
-        self.tree.configure(yscroll=scrollbar.set)
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(xscrollcommand=h_scrollbar.set)
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
         self.tree.grid(row=0, column=0, sticky="nsew")
         
         # Status bar

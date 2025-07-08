@@ -20,6 +20,57 @@ class CameraFeed(ttk.Frame):
             self.camera_combobox.current(0)
             self.on_camera_select()
 
+        # Add refresh button
+        self.setup_refresh_button()
+
+    def setup_refresh_button(self):
+        """Add a button to refresh cameras from database"""
+        self.refresh_btn = ttk.Button(
+            self.controls_frame,
+            text="Refresh Cameras",
+            command=self.refresh_cameras
+        )
+        self.refresh_btn.pack(side=tk.LEFT, padx=5)
+
+    def refresh_cameras(self):
+        """Reload cameras from database"""
+        try:
+            from app.db.crud import get_all_cameras
+            from app.db.database import get_db
+            
+            db = next(get_db())
+            cameras = get_all_cameras(db)
+            
+            self.available_cameras = []
+            for camera in cameras:
+                if camera.is_enabled:
+                    self.available_cameras.append({
+                        'camera_id': camera.camera_id,
+                        'camera_name': camera.camera_name,
+                        'url': camera.url,
+                        'enabled': camera.is_enabled,
+                        'location': camera.location,
+                        'event_type': camera.event_type
+                    })
+            
+            # Update combobox values
+            self.camera_combobox['values'] = [cam['camera_name'] for cam in self.available_cameras]
+            
+            # Reset selection if current camera is no longer available
+            if self.current_camera_id and not any(
+                cam['camera_id'] == self.current_camera_id for cam in self.available_cameras
+            ):
+                self.current_camera_id = None
+                self.video_label.config(image=None)
+                self.camera_frame.config(text="Camera Feed")
+            
+            if self.available_cameras and not self.current_camera_id:
+                self.camera_combobox.current(0)
+                self.on_camera_select()
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to refresh cameras: {e}")
+
     def setup_ui(self):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)

@@ -37,24 +37,8 @@ class MainApp:
         # Initialize database
         init_db()
 
-    def load_camera_config(self) -> List[Dict]:
-        """Load camera configuration from YAML file"""
-        try:
-            with open(self.config_path, 'r') as file:
-                config = yaml.safe_load(file)
-            
-            # Filter only enabled cameras and add camera_name if not present
-            enabled_cameras = []
-            for cam in config['cameras']:
-                if cam.get('enabled', True):
-                    if 'camera_name' not in cam:
-                        cam['camera_name'] = f"{cam['camera_id']} ({cam.get('event_type', 'N/A')})"
-                    enabled_cameras.append(cam)
-            return enabled_cameras
-        except Exception as e:
-            print(f"[ERROR] Failed to load config: {e}")
-            return []
-        
+    # Load camera configuration from database
+    # If database is unavailable, we will not fallback to YAML   
     def load_camera_config_from_db(self) -> List[Dict]:
         """Load camera configuration from database"""
         try:
@@ -64,40 +48,37 @@ class MainApp:
             db = next(get_db())
             cameras = get_all_cameras(db)
             
-            enabled_cameras = []
-            for camera in cameras:
-                if camera.is_enabled:
-                    enabled_cameras.append({
-                        'camera_id': camera.camera_id,
-                        'camera_name': camera.camera_name,
-                        'url': camera.url,
-                        'enabled': camera.is_enabled,
-                        'location': camera.location,
-                        'event_type': camera.event_type
-                    })
-            return enabled_cameras
+            return [{
+                'camera_id': cam.camera_id,
+                'camera_name': cam.camera_name,
+                'url': cam.url,
+                'enabled': cam.is_enabled,
+                'location': cam.location,
+                'event_type': cam.event_type
+            } for cam in cameras if cam.is_enabled]
+            
         except Exception as e:
             print(f"[ERROR] Failed to load camera config from database: {e}")
-            # Fallback to YAML if database fails
-            return self.load_camera_config_from_yaml()
-
-    def load_camera_config_from_yaml(self) -> List[Dict]:
-        """Fallback to load camera configuration from YAML file"""
-        try:
-            import yaml
-            with open(self.config_path, 'r') as file:
-                config = yaml.safe_load(file)
-            
-            enabled_cameras = []
-            for cam in config['cameras']:
-                if cam.get('enabled', True):
-                    if 'camera_name' not in cam:
-                        cam['camera_name'] = f"{cam['camera_id']} ({cam.get('event_type', 'N/A')})"
-                    enabled_cameras.append(cam)
-            return enabled_cameras
-        except Exception as e:
-            print(f"[ERROR] Failed to load config: {e}")
+            # No fallback to YAML - fail hard if DB is unavailable
             return []
+
+    # def load_camera_config_from_yaml(self) -> List[Dict]:
+    #     """Fallback to load camera configuration from YAML file"""
+    #     try:
+    #         import yaml
+    #         with open(self.config_path, 'r') as file:
+    #             config = yaml.safe_load(file)
+            
+    #         enabled_cameras = []
+    #         for cam in config['cameras']:
+    #             if cam.get('enabled', True):
+    #                 if 'camera_name' not in cam:
+    #                     cam['camera_name'] = f"{cam['camera_id']} ({cam.get('event_type', 'N/A')})"
+    #                 enabled_cameras.append(cam)
+    #         return enabled_cameras
+    #     except Exception as e:
+    #         print(f"[ERROR] Failed to load config: {e}")
+    #         return []
 
     def setup_ui(self):
         self.root.title("Face Recognition Attendance System")
@@ -176,7 +157,7 @@ class MainApp:
     def start_system(self):
         """Start the recognition system in a separate thread"""
         if self.recognition_system is None:
-            self.recognition_system = MultiCameraFaceRecognition(self.config_path)
+            self.recognition_system = MultiCameraFaceRecognition()
             self.system_thread = threading.Thread(
                 target=self.recognition_system.start,
                 daemon=True

@@ -38,9 +38,54 @@ logging.basicConfig(
 )
 
 class MultiCameraFaceRecognition:
-    def __init__(self, config_path="camera_config.yaml"):
+    # def __init__(self, config_path="camera_config.yaml"):
+    #     self._running = False  # System running state flag
+    #     self.config = self.load_config(config_path)
+    #     self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #     print(f"[INFO] Using device: {self.device}")
+        
+    #     # Initialize models
+    #     self._init_models()
+        
+    #     # Load face database
+    #     # self.images_names, self.images_embs = read_features("./datasets/face_features/feature")
+
+    #     self.images_names = []
+    #     self.images_embs = []
+    #     self.load_face_database()  # This will populate the above lists from DB
+
+
+        
+    #     # Threading and data structures
+    #     self.camera_data = {}
+    #     self.data_lock = threading.Lock()
+    #     self.log_queue = Queue()
+    #     self.id_face_mapping = defaultdict(dict)
+    #     self.last_logged_time = {}
+    #     self.recognition_history = defaultdict(lambda: deque(maxlen=3))
+    #     self.worker_threads = []  # Track all worker threads
+        
+    #     # Create snapshots directory
+    #     os.makedirs("snapshots", exist_ok=True)
+        
+    #     # Get settings from config
+    #     self.confidence_threshold = self.config['recognition']['confidence_threshold']
+    #     self.logging_interval = self.config['recognition']['logging_interval']
+    #     self.frame_skip = self.config['recognition']['frame_skip']
+    #     self.max_width = self.config['performance']['max_resolution_width']
+        
+    #     # Initialize global frames dict
+    #     global latest_frames
+    #     for cam in self.config['cameras']:
+    #         if cam.get('enabled', True):
+    #             latest_frames[cam['camera_id']] = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+    #     self.load_face_database()
+    
+
+
+    def __init__(self):
         self._running = False  # System running state flag
-        self.config = self.load_config(config_path)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[INFO] Using device: {self.device}")
         
@@ -50,6 +95,7 @@ class MultiCameraFaceRecognition:
         # Load face database
         # self.images_names, self.images_embs = read_features("./datasets/face_features/feature")
 
+        self.load_camera_config()
         self.images_names = []
         self.images_embs = []
         self.load_face_database()  # This will populate the above lists from DB
@@ -81,7 +127,8 @@ class MultiCameraFaceRecognition:
                 latest_frames[cam['camera_id']] = np.zeros((480, 640, 3), dtype=np.uint8)
         
         self.load_face_database()
-    
+
+
     def load_config(self, config_path):
         """Load camera configuration from YAML file"""
         with open(config_path, 'r') as file:
@@ -461,13 +508,12 @@ class MultiCameraFaceRecognition:
 
     # In MultiCameraFaceRecognition class
     def load_camera_config(self):
-        """Load camera configuration from database"""
+        """Load camera and system configuration from database"""
         try:
             db = next(get_db())
-            cameras = db.query(Camera).filter(Camera.is_enabled == True).all()
             
-            self.config = {
-                'cameras': [],
+            # Load system configuration with defaults
+            system_config = {
                 'recognition': {
                     'confidence_threshold': 0.40,
                     'logging_interval': 500,
@@ -479,22 +525,29 @@ class MultiCameraFaceRecognition:
                 }
             }
             
-            for camera in cameras:
-                self.config['cameras'].append({
-                    'camera_id': camera.camera_id,
-                    'name': camera.camera_name,
-                    'url': camera.url,
-                    'enabled': camera.is_enabled,
-                    'location': camera.location,
-                    'event_type': camera.event_type
-                })
-                
-        except Exception as e:
-            print(f"[ERROR] Failed to load camera config from database: {e}")
-            # Fallback to YAML config
-            with open(self.config_path, 'r') as file:
-                self.config = yaml.safe_load(file)
+            # Load cameras
+            cameras = db.query(Camera).filter(Camera.is_enabled == True).all()
+            
+            self.config = {
+                'cameras': [{
+                    'camera_id': cam.camera_id,
+                    'camera_name': cam.camera_name,
+                    'url': cam.url,
+                    'location': cam.location,
+                    'event_type': cam.event_type,
+                    'enabled': cam.is_enabled
+                } for cam in cameras],
+                'recognition': system_config['recognition'],
+                'performance': system_config['performance']
+            }
 
+            # Remove the YAML fallback - we want to fail if DB is unavailable
+            # This ensures we don't silently use outdated config
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to load configuration from database: {e}")
+            raise RuntimeError("Database configuration loading failed - system cannot start")
+            
 
     def start(self):
         """Start the multi-camera recognition system"""

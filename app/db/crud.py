@@ -13,6 +13,7 @@ from sqlalchemy.orm import joinedload
 import numpy as np
 import io
 from .models import AttendanceLog, DailySummary, Person, FaceFeature, FaceImage, Camera
+from sqlalchemy import text
 
 @contextmanager
 def get_db():
@@ -317,3 +318,34 @@ def delete_camera(db: Session, camera_id: str) -> bool:
     db.delete(camera)
     db.commit()
     return True
+
+
+# camera db usage functions
+
+
+def get_system_config(db: Session) -> Dict:
+    """Get all system configuration"""
+    try:
+        config_entries = db.execute(
+            text("SELECT config_key, config_value FROM system_config")
+        ).fetchall()
+        return dict(config_entries)
+    except Exception as e:
+        print(f"[ERROR] Failed to load system config: {e}")
+        return {}
+
+def update_system_config(db: Session, key: str, value: str) -> bool:
+    """Update system configuration"""
+    try:
+        db.execute(
+            "INSERT INTO system_config (config_key, config_value) "
+            "VALUES (:key, :value) "
+            "ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value",
+            {"key": key, "value": str(value)}
+        )
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Failed to update system config: {e}")
+        return False

@@ -163,3 +163,11 @@ class Image(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func
                         .now())
     # create a table for camera
+
+
+class SystemConfig(Base):
+    __tablename__ = 'system_config'
+    
+    config_key = Column(String(100), primary_key=True)
+    config_value = Column(String(255))
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
